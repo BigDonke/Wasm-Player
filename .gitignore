@@ -1,0 +1,6 @@
+# Downloaded and built by build/build.sh
+build/emsdk/
+build/ffmpeg-*/
+# Local single-file build, not part of the repository
+player.html
+.DS_Store

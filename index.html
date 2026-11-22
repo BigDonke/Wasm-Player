@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wasm-Player</title>
+<meta name="description" content="Play MKV, HEVC, TrueHD, DTS and other files the browser cannot open by itself. Runs in the page, nothing is uploaded.">
+<link rel="icon" href="data:,">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#f7f7f7, #141414);
+  --text: light-dark(#1a1a1a, #e6e6e6);
+  --muted: light-dark(#5a5a5a, #a3a3a3);
+  --line: light-dark(#d2d2d2, #353535);
+  --field: light-dark(#ffffff, #1e1e1e);
+  --warn: light-dark(#8a5200, #eeb350);
+  --bad: light-dark(#b3261e, #ff8f85);
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+body { margin: 0 auto; max-width: 1180px; padding: 28px 20px 40px; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+header h1 { margin: 0; font-size: 1.35rem; font-weight: 650; }
+header p { margin: 4px 0 20px; color: var(--muted); max-width: 62ch; }
+
+#source label { display: block; font-size: .87rem; color: var(--muted); margin-bottom: 4px; }
+#source .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+#url { flex: 1; min-width: 240px; }
+input, select, button { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 4px; padding: 7px 11px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--text); color: var(--bg); border-color: var(--text); padding-inline: 18px; }
+#source .or { color: var(--muted); white-space: nowrap; }
+#source .or button { margin-left: 4px; }
+
+#stage { position: relative; background: #000; color: #fff; color-scheme: dark; aspect-ratio: 16 / 9; max-height: 80vh; width: 100%; overflow: hidden; border-radius: 4px; user-select: none; }
+#stage:fullscreen { max-height: none; border-radius: 0; aspect-ratio: auto; }
+#stage :focus-visible { outline-color: #fff; }
+video, #pgs { position: absolute; inset: 0; width: 100%; height: 100%; }
+#pgs { pointer-events: none; }
+#cues { position: absolute; left: 5%; right: 5%; bottom: 6%; text-align: center; pointer-events: none; transition: bottom .2s; }
+#stage.ui #cues { bottom: calc(6% + 44px); }
+@media (max-width: 600px) { #stage.ui #cues { bottom: calc(6% + 62px); } }
+#cues span { display: inline-block; padding: .1em .35em; background: rgba(0,0,0,.45); border-radius: 3px; color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 2px #000; white-space: pre-line; line-height: 1.3; }
+#msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; color: #bdbdbd; pointer-events: none; }
+#msg.spin::before { content: ""; width: 32px; height: 32px; border: 3px solid #ffffff40; border-top-color: #fff; border-radius: 50%; animation: r .8s linear infinite; }
+@keyframes r { to { transform: rotate(360deg); } }
+#bigplay { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 76px; height: 76px; border-radius: 50%;
+  border: 1px solid #ffffff60; background: rgba(0,0,0,.55); color: #fff; font-size: 30px; padding-left: 6px; display: none; z-index: 2; }
+#bigplay.show { display: block; }
+#controls { position: absolute; left: 0; right: 0; bottom: 0; padding: 20px 10px 8px; display: flex; gap: 6px; align-items: center;
+  background: linear-gradient(transparent, rgba(0,0,0,.7)); opacity: 0; transition: opacity .2s; }
+#stage.ui #controls { opacity: 1; }
+#stage:not(.ui) { cursor: none; }
+#controls button, #controls select { color: #fff; background: transparent; border-color: transparent; padding: 4px 8px; font-size: .9rem; }
+#controls button:hover, #controls select:hover { background: rgba(255,255,255,.14); }
+#controls select { max-width: 200px; }
+#controls select:empty { display: none; }
+#controls option { background: #1e1e1e; color: #e6e6e6; }
+#play { width: 36px; }
+#time { font-variant-numeric: tabular-nums; font-size: .9rem; color: #e0e0e0; white-space: nowrap; padding: 0 4px; }
+#bar { position: relative; flex: 1; height: 18px; cursor: pointer; touch-action: none; }
+#bar > div { position: absolute; left: 0; top: 7px; height: 4px; border-radius: 2px; }
+#track { right: 0; background: rgba(255,255,255,.22); }
+#buffered > i { position: absolute; top: 0; height: 4px; background: rgba(255,255,255,.45); }
+#buffered { right: 0; }
+#played { background: #fff; }
+#hover { position: absolute; bottom: 20px; transform: translateX(-50%); background: rgba(0,0,0,.85); padding: 2px 6px; border-radius: 3px; font-size: 12px; display: none; font-variant-numeric: tabular-nums; }
+#vol { width: 80px; padding: 0; accent-color: #fff; }
+
+#details { margin-top: 14px; }
+#chips { margin: 0; padding: 0; list-style: none; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+#chips:empty { display: none; }
+#chips .warn { color: var(--warn); }
+#chips .warn::before { content: "Note: "; }
+#chips .bad { color: var(--bad); }
+#chips .bad::before { content: "Unsupported: "; }
+
+footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: .87rem; }
+footer p { margin: 0 0 6px; }
+kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; color: var(--text); }
+
+#drop { position: fixed; inset: 0; z-index: 9; display: none; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); border: 2px dashed var(--muted); font-size: 1.2rem; pointer-events: none; }
+body.drag #drop { display: flex; }
+
+@media (max-width: 600px) {
+  body { padding: 18px 14px 32px; }
+  #vol { display: none; }
+  #controls { gap: 2px; padding-inline: 6px; flex-wrap: wrap; }
+  #bar { order: -1; flex-basis: 100%; }
+  #time { margin-right: auto; }
+  #controls select { max-width: 92px; padding-inline: 4px; }
+  #time { font-size: .8rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #cues, #controls { transition: none; }
+  #msg.spin::before { animation-duration: 2.4s; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Wasm-Player</h1>
+  <p>Plays MKV, HEVC, TrueHD, DTS and other files your browser can't open by itself. It all runs on this page, and nothing is uploaded.</p>
+</header>
+<div id="source">
+  <label for="url">Link to a video file</label>
+  <div class="row">
+    <input id="url" type="url" placeholder="https://example.com/movie.mkv" spellcheck="false">
+    <button id="open" class="primary">Play</button>
+    <span class="or">or <button id="pick">Open a file…</button></span>
+    <input id="file" type="file" hidden>
+  </div>
+</div>
+<main>
+  <div id="stage" class="ui">
+    <video id="video" playsinline disableremoteplayback></video>
+    <canvas id="pgs"></canvas>
+    <div id="cues"></div>
+    <div id="msg">Paste a link or open a file.</div>
+    <button id="bigplay" title="Play" aria-label="Play">▶</button>
+    <div id="controls">
+      <button id="play" title="Play (k)" aria-label="Play or pause">▶</button>
+      <span id="time">0:00 / 0:00</span>
+      <div id="bar"><div id="track"></div><div id="buffered"></div><div id="played"></div><span id="hover"></span></div>
+      <input id="vol" type="range" min="0" max="1" step="0.05" value="1" title="Volume (↑/↓, m)" aria-label="Volume">
+      <select id="aud" title="Audio (a)" aria-label="Audio track"></select>
+      <select id="sub" title="Subtitles (c)" aria-label="Subtitles"></select>
+      <button id="fs" title="Fullscreen (f)" aria-label="Fullscreen">⛶</button>
+    </div>
+  </div>
+  <div id="details">
+    <ul id="chips"></ul>
+  </div>
+</main>
+<footer>
+  <p><kbd>Space</kbd> play or pause, <kbd>←</kbd> <kbd>→</kbd> 5 s, <kbd>J</kbd> <kbd>L</kbd> 10 s, <kbd>F</kbd> fullscreen, <kbd>A</kbd> next audio track, <kbd>C</kbd> next subtitles. You can also drop a file or link anywhere on the page.</p>
+  <p><a href="https://github.com/BigDonke/Wasm-Player">Source on GitHub</a></p>
+</footer>
+<div id="drop">Drop to play</div>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const video = $('video'), stage = $('stage'), msgEl = $('msg'), cuesEl = $('cues'), canvas = $('pgs');
+const MS = window.MediaSource || window.ManagedMediaSource;
+const AHEAD_MAX = 45, BEHIND_MAX = 20;
+// Browsers cap a SourceBuffer and past that they silently evict data, including data ahead of the
+// playhead. Chromium caps video at about 150 MB and audio at 12 MB, Firefox video at 100 MB. The
+// read-ahead is sized from the measured bitrate so each buffer stays under these budgets.
+// Firefox also needs every HEVC restart to begin on an IDR picture.
+const FIREFOX = /Firefox\//.test(navigator.userAgent);
+const BUDGET = { video: FIREFOX ? 60e6 : 80e6, audio: 8e6 };
+// Decoded audio is capped at 5.1. FFmpeg writes 7.1 AAC as channel configuration 12, which Chrome's MSE rejects.
+const MAX_CH = 6;
+const LOST = 'Connection lost';
+const NO_IDR = 'Firefox can only start HEVC video on an IDR frame, and this file has none near this point. Seek elsewhere, or use Chrome, Edge or Safari.';
+
+let worker, info, ms, vbuf, abuf, gen = 0, eof = false, pumping = false, firstPump = true;
+let sel = { v: -1, a: -1, s: -1, dv: 0, aMode: 0, aMime: '' };
+let seekTimer = 0, stallAt = 0, retryTimer = 0;
+
+/* ---------- helpers ---------- */
+
+const fmt = (t) => {
+  if (!isFinite(t)) t = 0;
+  const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = Math.floor(t % 60);
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
+};
+const supported = (mime) => { try { return MS.isTypeSupported(mime); } catch (e) { return false; } };
+const pad2 = (n) => String(n).padStart(2, '0');
+function say(text, spin) { msgEl.textContent = text || ''; msgEl.className = spin ? 'spin' : ''; }
+function chip(text, cls) { const c = document.createElement('li'); c.className = 'chip ' + (cls || ''); c.textContent = text; $('chips').append(c); }
+
+const PROFILES = {
+  hevc: { 1: 'Main', 2: 'Main 10', 3: 'Main Still', 4: 'RExt' },
+  h264: { 66: 'Baseline', 578: 'Baseline', 77: 'Main', 88: 'Extended', 100: 'High', 110: 'High 10', 122: 'High 4:2:2', 244: 'High 4:4:4' },
+  av1: { 0: 'Main', 1: 'High', 2: 'Professional' },
+  vp9: { 0: 'Profile 0', 1: 'Profile 1', 2: 'Profile 2', 3: 'Profile 3' },
+  aac: { 0: 'Main', 1: 'LC', 4: 'HE-AAC', 28: 'HE-AACv2', 22: 'LD', 38: 'ELD' },
+  dts: { 20: 'DTS', 30: 'DTS-ES', 40: 'DTS 96/24', 50: 'DTS-HD HRA', 60: 'DTS-HD MA', 61: 'DTS-HD MA + DTS:X', 62: 'DTS-HD MA + DTS:X IMAX', 70: 'DTS Express' },
+  eac3: { 30: 'Atmos' },
+  truehd: { 30: 'Atmos' },
+};
+function codecLabel(s) {
+  const p = (PROFILES[s.codec] || {})[s.profile] || '';
+  switch (s.codec) {
+    case 'truehd': return /atmos/i.test(p) ? 'TrueHD Atmos' : 'TrueHD';
+    case 'eac3': return /atmos/i.test(p) ? 'E-AC-3 Atmos' : 'E-AC-3';
+    case 'ac3': return 'AC-3';
+    case 'dts': return p || 'DTS';
+    case 'hevc': return 'HEVC' + (p ? ' ' + p : '');
+    case 'h264': return 'H.264' + (p ? ' ' + p : '');
+    case 'subrip': return 'SRT';
+    case 'hdmv_pgs_subtitle': return 'PGS';
+    case 'dvd_subtitle': return 'VobSub';
+    case 'dvb_subtitle': return 'DVB';
+    default: return (s.codec || '?').toUpperCase() + (p && s.type === 'audio' ? ' ' + p : '');
+  }
+}
+function langName(code) {
+  if (!code || code === 'und') return '';
+  try { return new Intl.DisplayNames([navigator.language], { type: 'language' }).of(code) || code; } catch (e) { return code; }
+}
+function streamLabel(s) {
+  const parts = [langName(s.lang), codecLabel(s)];
+  if (s.type === 'audio') parts.push(s.layout || s.channels + 'ch');
+  if (s.title && !parts.includes(s.title)) parts.push(s.title);
+  if (s.forced) parts.push('forced');
+  return parts.filter(Boolean).join(' · ');
+}
+
+/* ---------- codec decisions ---------- */
+
+function videoPlan(s) {
+  if (s.dv && (s.dv.profile === 5 || s.dv.profile === 8)) {
+    const c = `dvh1.${pad2(s.dv.profile)}.${pad2(s.dv.level)}`;
+    if (supported(`video/mp4; codecs="${c}"`)) return { mime: `video/mp4; codecs="${c}"`, dv: 1 };
+  }
+  if (s.mse && supported(`video/mp4; codecs="${s.mse}"`)) return { mime: `video/mp4; codecs="${s.mse}"`, dv: 0 };
+  // Some browsers reject unusual HEVC levels in the string but decode the stream fine
+  if (s.codec === 'hevc') {
+    const c = s.profile === 2 ? 'hvc1.2.4.L153.B0' : 'hvc1.1.6.L153.B0';
+    if (supported(`video/mp4; codecs="${c}"`)) return { mime: `video/mp4; codecs="${c}"`, dv: 0 };
+  }
+  return null;
+}
+
+function audioCopyCodec(s) {
+  switch (s.codec) {
+    case 'aac': return s.profile === 28 ? 'mp4a.40.29' : s.profile === 4 ? 'mp4a.40.5' : 'mp4a.40.2';
+    case 'mp3': return 'mp4a.6B';
+    case 'ac3': return 'ac-3';
+    case 'eac3': return 'ec-3';
+    case 'opus': return 'opus';
+    case 'flac': return 'flac';
+  }
+  return null;
+}
+
+function audioPlan(s) {
+  const c = audioCopyCodec(s);
+  if (c && supported(`audio/mp4; codecs="${c}"`)) return { mode: 0, mime: `audio/mp4; codecs="${c}"` };
+  return { mode: 1, mime: 'audio/mp4; codecs="mp4a.40.2"' };
+}
+
+/* ---------- SourceBuffer queue ---------- */
+
+class Buf {
+  constructor(sb, kind) {
+    this.sb = sb; this.ms = ms; this.q = [];
+    this.budget = BUDGET[kind]; this.bytes = 0; this.rate = 0; this.raps = [];
+    sb.addEventListener('updateend', () => this.next());
+  }
+  push(op) { this.q.push(op); this.next(); }
+  get busy() { return this.sb.updating || this.q.length > 0; }
+  // Seconds of media that fit in the budget, from bytes appended since the last restart
+  fitSeconds() {
+    const b = this.sb.buffered;
+    const span = b.length ? b.end(b.length - 1) - lastStart.t : 0;
+    if (span > 2 && this.bytes) this.rate = this.bytes / span;
+    return this.rate ? this.budget / this.rate : 0;
+  }
+  // Keeps 3/4 of the budget for read-ahead and 1/4 for already played data
+  limits() {
+    const w = this.fitSeconds();
+    if (!w) return { ahead: 4, behind: 4 };
+    return { ahead: Math.max(4, Math.min(AHEAD_MAX, w * 0.75)), behind: Math.max(2, Math.min(BEHIND_MAX, w * 0.25)) };
+  }
+  // Keeps the buffered media. The restart rewrites its tail from a keyframe at or before the end.
+  resume() {
+    this.bytes = 0;
+    this.push({ abort: true });
+  }
+  reset() {
+    this.q = []; this.bytes = 0; this.raps = [];
+    if (this.sb.updating) { try { this.sb.abort(); } catch (e) { /* a remove is running, let it finish */ } }
+    this.push({ remove: [0, Infinity] });
+    this.push({ abort: true });
+  }
+  next() {
+    if (this.sb.updating || !this.q.length || this.ms.readyState === 'closed' || video.error) return;
+    const op = this.q[0];
+    try {
+      if (op.append) this.sb.appendBuffer(op.append);
+      else if (op.remove) {
+        const b = this.sb.buffered;
+        if (!b.length || op.remove[1] <= op.remove[0]) { this.q.shift(); return this.next(); }
+        this.sb.remove(op.remove[0], op.remove[1]);
+      } else {
+        if (op.abort && this.ms.readyState === 'open') this.sb.abort();
+        if (op.change) this.sb.changeType(op.change);
+        this.q.shift();
+        return this.next();
+      }
+      this.q.shift();
+    } catch (e) {
+      if (e.name === 'QuotaExceededError') {
+        // This browser's cap is lower than the budget. Shrink it, drop played data, retry.
+        this.budget *= 0.75;
+        const behind = this.raps.length ? this.raps.filter((r) => r <= video.currentTime - 1).pop() || 0 : video.currentTime - 1;
+        if (this.sb.buffered.length && this.sb.buffered.start(0) < behind) this.q.unshift({ remove: [0, behind] });
+        setTimeout(() => this.next(), 1000);
+      } else {
+        console.error(e);
+        this.q.shift();
+        this.next();
+      }
+    }
+  }
+}
+
+/* ---------- worker ---------- */
+
+function makeWorker() {
+  if (worker) worker.terminate();
+  worker = new Worker('worker.js');
+  worker.onmessage = ({ data: m }) => handlers[m.type] && handlers[m.type](m);
+  worker.onerror = (e) => say('Worker failed: ' + (e.message || 'unknown error'));
+}
+
+const handlers = {
+  info(m) { info = m.info; setupStreams(); },
+  started(m) {
+    if (m.gen !== gen || !abuf) return;
+    if (m.aMode !== sel.aMode) {
+      sel.aMode = m.aMode;
+      setAudioMime('audio/mp4; codecs="mp4a.40.2"');
+      showChips();
+    }
+  },
+  data(m) {
+    if (m.gen !== gen) return;
+    pumping = false;
+    if (m.v && vbuf) {
+      vbuf.bytes += m.v.length;
+      // After a resume the new points overlap the kept ones, so keep the list sorted
+      if (m.raps.length) vbuf.raps = vbuf.raps.filter((r) => r < m.raps[0]);
+      vbuf.raps.push(...m.raps);
+      vbuf.push({ append: m.v });
+    }
+    if (m.a && abuf) { abuf.bytes += m.a.length; abuf.push({ append: m.a }); }
+    for (const t of m.texts) subs.addText(t);
+    for (const b of m.bitmaps) subs.addBitmap(b);
+    if (m.eof) eof = true;
+    if (m.readError) return retryRead(m.readError);
+    if (msgEl.textContent.startsWith(LOST)) say('');
+    tick();
+  },
+  error(m) {
+    if (m.gen !== undefined && m.gen !== gen) return;
+    pumping = false;
+    say(m.message);
+  },
+};
+
+/* ---------- open / setup ---------- */
+
+function open(src) {
+  teardown();
+  say('Reading file header…', true);
+  makeWorker();
+  worker.postMessage({ type: 'open', src });
+}
+
+function teardown() {
+  info = null; gen++; eof = false; pumping = false;
+  subs.clear();
+  $('chips').innerHTML = '';
+  if (video.src) { video.removeAttribute('src'); video.load(); }
+  vbuf = abuf = ms = null;
+}
+
+function setupStreams() {
+  const vs = info.streams.filter((s) => s.type === 'video' && s.codec !== 'mjpeg' && s.codec !== 'png');
+  const as = info.streams.filter((s) => s.type === 'audio');
+  const ss = info.streams.filter((s) => s.type === 'subtitle' && (s.text || s.bitmap));
+  const pick = (list) => (list.find((s) => s.default) || list[0]);
+
+  const v = pick(vs);
+  sel.v = -1; sel.vPlan = null;
+  if (v) {
+    sel.vPlan = videoPlan(v);
+    if (sel.vPlan) { sel.v = v.index; sel.dv = sel.vPlan.dv; }
+  }
+  const a = pick(as);
+  sel.a = a ? a.index : -1;
+  const forced = ss.find((s) => s.forced);
+  sel.s = forced ? forced.index : -1;
+
+  $('aud').innerHTML = as.map((s) => `<option value="${s.index}">${esc(streamLabel(s))}</option>`).join('') || '<option>No audio</option>';
+  $('aud').value = sel.a;
+  $('sub').innerHTML = '<option value="-1">Subtitles off</option>' + ss.map((s) => `<option value="${s.index}">${esc(streamLabel(s))}</option>`).join('');
+  $('sub').value = sel.s;
+
+  if (v && !sel.vPlan) say(`This browser cannot decode ${codecLabel(v)} video. Playing audio and subtitles only.`);
+  else if (sel.v < 0 && sel.a < 0) return say('No playable streams found.');
+  else say('Buffering…', true);
+  if (sel.a >= 0) {
+    const p = audioPlan(info.streams[sel.a]);
+    sel.aMode = p.mode; sel.aMime = p.mime;
+  }
+  showChips();
+  attach(0);
+}
+
+function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function showChips() {
+  $('chips').innerHTML = '';
+  chip(info.format.split(',')[0].toUpperCase());
+  const v = info.streams[sel.v] || info.streams.find((s) => s.type === 'video');
+  if (v) {
+    chip(`${codecLabel(v)} · ${v.width}×${v.height}${v.fps ? ' · ' + +v.fps.toFixed(3) + ' fps' : ''}`, sel.v >= 0 ? 'ok' : 'bad');
+    if (v.trc === 'smpte2084') chip('HDR10 (PQ)');
+    if (v.trc === 'arib-std-b67') chip('HLG');
+    if (v.dv) {
+      const d = `Dolby Vision P${v.dv.profile}.${v.dv.compat} L${v.dv.level}`;
+      if (sel.dv) chip(d + ' · native', 'ok');
+      else if (v.dv.profile === 5) chip(d + ' · no fallback layer, colors will be wrong here', 'warn');
+      else chip(d + ' · playing HDR base layer', 'warn');
+    }
+  }
+  const a = info.streams[sel.a];
+  if (a) {
+    const out = a.channels >= 6 ? '5.1' : a.channels === 1 ? 'mono' : 'stereo';
+    chip(sel.aMode ? `${codecLabel(a)} ${a.layout || ''} → AAC ${out} (decoded in WebAssembly)` : `${codecLabel(a)} passthrough`, 'ok');
+  }
+  if (a && /atmos|dts:x/i.test(codecLabel(a)) && sel.aMode) chip('Object audio is rendered as its channel bed', 'warn');
+}
+
+function attach(t) {
+  ms = new MS();
+  video.disableRemotePlayback = true;
+  video.src = URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen', () => {
+    URL.revokeObjectURL(video.src);
+    if (info.duration > 0) ms.duration = info.duration + info.shift;
+    try {
+      vbuf = sel.v >= 0 ? new Buf(ms.addSourceBuffer(sel.vPlan.mime), 'video') : null;
+      abuf = sel.a >= 0 ? new Buf(ms.addSourceBuffer(sel.aMime), 'audio') : null;
+    } catch (e) { return say('MediaSource refused the stream: ' + e.message); }
+    if (t > 0) video.currentTime = t;
+    start(t);
+    tryPlay();
+  }, { once: true });
+}
+
+// Brave and Safari block autoplay with sound, so offer a big play button instead
+function tryPlay() {
+  video.play().then(() => $('bigplay').classList.remove('show')).catch((e) => {
+    if (e.name === 'NotAllowedError') $('bigplay').classList.add('show');
+  });
+}
+$('bigplay').onclick = () => { $('bigplay').classList.remove('show'); video.play().catch(() => {}); };
+video.addEventListener('play', () => $('bigplay').classList.remove('show'));
+
+function setAudioMime(mime) {
+  if (sel.aMime === mime) return;
+  sel.aMime = mime;
+  if (abuf && abuf.sb.changeType) abuf.push({ change: mime });
+}
+
+function teardownMedia() { gen++; vbuf = abuf = null; video.removeAttribute('src'); video.load(); }
+
+let lastStart = { t: -1, at: 0 };
+function start(t, keep) {
+  lastStart = { t, at: performance.now() };
+  if (msgEl.textContent === NO_IDR) say('');
+  gen++; eof = false; pumping = false; firstPump = true;
+  for (const b of [vbuf, abuf]) if (b) keep ? b.resume() : b.reset();
+  subs.restart();
+  worker.postMessage({
+    type: 'start', gen, t, v: sel.v, a: sel.a, aMode: sel.aMode, maxCh: MAX_CH,
+    sub: info.streams[sel.s] && info.streams[sel.s].bitmap ? sel.s : -1, dv: sel.dv, idr: FIREFOX ? 1 : 0,
+  });
+  tick();
+}
+
+// After a failed read the demuxer stays stuck until it seeks. Play on from the buffer and
+// retry every few seconds from where the buffer ends, keeping what is already buffered.
+function retryRead(why) {
+  pumping = true;
+  console.warn('Read failed, retrying:', why);
+  if (bufferedAhead() < 1) { const code = /HTTP \d+/.exec(why); say(LOST + (code ? ` (${code[0]})` : '') + '. Retrying…'); }
+  const g = gen;
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => { if (g === gen && ms) start(video.currentTime + bufferedAhead(), true); }, 3000);
+}
+
+/* ---------- buffering loop ---------- */
+
+function bufferedAhead() {
+  const b = video.buffered, t = video.currentTime;
+  for (let i = 0; i < b.length; i++) if (b.start(i) <= t + 0.5 && b.end(i) > t) return b.end(i) - t;
+  return 0;
+}
+
+// Seconds buffered past t in one SourceBuffer, up to its last range
+function ownAhead(sb, t) {
+  const b = sb.buffered;
+  return b.length ? b.end(b.length - 1) - t : 0;
+}
+
+function inBuffered(t) {
+  const b = video.buffered;
+  for (let i = 0; i < b.length; i++) if (b.start(i) <= t + 0.1 && t < b.end(i) - 0.3) return true;
+  return false;
+}
+
+function tick() {
+  if (!ms || !info || ms.readyState === 'closed') return;
+  const t = video.currentTime;
+  const bufs = [vbuf, abuf].filter(Boolean);
+  const lim = bufs.map((b) => b.limits());
+  const ahead = Math.min(...lim.map((l) => l.ahead));
+  const busy = bufs.some((b) => b.q.length > 2);
+  // video.buffered is the intersection of all buffers. If one buffer stays empty, the other
+  // must still stop at its own limit.
+  const full = bufs.some((b) => ownAhead(b.sb, t) > ahead + 2);
+  if (!pumping && !eof && !busy && !full && bufferedAhead() < ahead) {
+    pumping = true;
+    worker.postMessage({ type: 'pump', gen, bytes: firstPump ? 1 << 20 : 6 << 20, sec: firstPump ? 1 : 6 });
+    firstPump = false;
+  }
+  if (eof && !pumping && !(vbuf && vbuf.busy) && !(abuf && abuf.busy) && ms.readyState === 'open') {
+    try { ms.endOfStream(); } catch (e) { /* still updating */ }
+  }
+  // Jump small gaps, e.g. at the start or when audio begins slightly after the seek point.
+  // In Firefox, HEVC video may begin at the next IDR after the seek point, up to a minute later.
+  // A larger hole with data after it means the browser evicted something we still need,
+  // so restart demuxing at the playhead once playback has been stuck for a moment.
+  if (!inBuffered(t)) {
+    if (!stallAt && !video.paused && !video.seeking) stallAt = performance.now();
+    const b = video.buffered;
+    const maxGap = FIREFOX && performance.now() - lastStart.at < 15000 ? 60 : 2;
+    if (FIREFOX && vbuf && abuf && !vbuf.sb.buffered.length && ownAhead(abuf.sb, t) > 8) say(NO_IDR);
+    for (let i = 0; i < b.length; i++) {
+      if (b.start(i) > t && b.start(i) - t < maxGap) { video.currentTime = b.start(i) + 0.01; break; }
+      if (b.start(i) > t && stallAt && performance.now() - stallAt > 1500 && !video.seeking) {
+        console.warn('Hole in buffer at', t.toFixed(2), 'restarting');
+        stallAt = 0;
+        start(t);
+        return;
+      }
+    }
+  }
+  // Drop played data so the budget is spent on what comes next. A video remove also drops
+  // frames up to the next random access point, so it ends on one at or before the cut.
+  bufs.forEach((buf, i) => {
+    const b = buf.sb.buffered;
+    let cut = t - lim[i].behind;
+    if (buf === vbuf) {
+      while (buf.raps.length > 1 && buf.raps[1] <= cut) buf.raps.shift();
+      cut = buf.raps.length && buf.raps[0] <= cut ? buf.raps[0] : 0;
+    }
+    if (!buf.busy && b.length && b.start(0) < cut - 2) buf.push({ remove: [0, cut] });
+  });
+  if (video.readyState >= 3 || video.paused) { if (msgEl.className === 'spin') say(''); }
+  else if (!msgEl.textContent) say('', true);
+}
+setInterval(tick, 250);
+
+// A decode error kills the media element. Rebuild it once per position and carry on.
+let lastRecover = -1;
+video.addEventListener('error', () => {
+  if (!ms || !info) return;
+  const t = video.currentTime;
+  console.warn('Media error, rebuilding', video.error && video.error.message);
+  if (Math.abs(t - lastRecover) < 1) return say('Playback failed: ' + (video.error && video.error.message));
+  lastRecover = t;
+  teardownMedia();
+  attach(t);
+});
+
+video.addEventListener('waiting', () => { if (!stallAt) stallAt = performance.now(); });
+for (const ev of ['playing', 'seeked', 'pause']) video.addEventListener(ev, () => { stallAt = 0; });
+
+video.addEventListener('seeking', () => {
+  clearTimeout(seekTimer);
+  seekTimer = setTimeout(() => {
+    const t = video.currentTime;
+    if (!ms || inBuffered(t)) return;
+    if (Math.abs(t - lastStart.t) < 1 && performance.now() - lastStart.at < 5000) return; // already starting there
+    start(t);
+  }, 150);
+});
+for (const ev of ['waiting', 'timeupdate', 'progress']) video.addEventListener(ev, tick);
+
+/* ---------- subtitles ---------- */
+
+const subs = {
+  text: new Map(), seen: new Set(), events: [], last: null, shownKey: '', ctx: canvas.getContext('2d'),
+  clear() { this.text.clear(); this.seen.clear(); this.events = []; this.last = null; this.render(true); },
+  // Decoded events survive a restart. Only the ones still waiting for their end are dropped.
+  restart() { this.events = this.events.filter((e) => e.end >= 0); this.last = null; this.render(true); },
+  addText({ idx, start, end, bytes }) {
+    const s = info.streams[idx];
+    const html = textToHtml(s.codec, bytes);
+    const key = idx + '|' + start + '|' + html;
+    if (!html || this.seen.has(key)) return;
+    this.seen.add(key);
+    if (!this.text.has(idx)) this.text.set(idx, []);
+    const list = this.text.get(idx);
+    list.push({ start, end, html });
+    if (list.length > 1 && list[list.length - 2].start > start) list.sort((x, y) => x.start - y.start);
+  },
+  addBitmap(ev) {
+    // PGS has no end times. An event ends where the next one starts.
+    const prev = this.last;
+    if (prev && prev.idx === ev.idx && prev.end < 0) prev.end = ev.start;
+    this.last = null;
+    if (!ev.rects.length) return;
+    const dup = this.events.find((e) => e.idx === ev.idx && e.start === ev.start);
+    if (dup) { this.last = dup; return; }
+    this.events.push((this.last = ev));
+    for (const r of ev.rects) {
+      createImageBitmap(new ImageData(new Uint8ClampedArray(r.rgba.buffer), r.w, r.h)).then((img) => { r.img = img; this.render(true); });
+    }
+    if (this.events.length > 300) {
+      const t = video.currentTime;
+      this.events.sort((a, b) => Math.abs(a.start - t) - Math.abs(b.start - t));
+      for (const e of this.events.splice(200)) for (const r of e.rects) if (r.img) r.img.close();
+    }
+  },
+  render(force) {
+    const t = video.currentTime, idx = sel.s;
+    let key = '', html = '', bmp = null;
+    const list = this.text.get(idx);
+    if (list) {
+      let lo = 0, hi = list.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].start <= t) lo = m + 1; else hi = m; }
+      const act = [];
+      for (let i = lo - 1; i >= 0 && i >= lo - 30; i--) if (list[i].end > t) act.unshift(list[i]);
+      html = act.map((c) => `<span>${c.html}</span>`).join('<br>');
+      key = html;
+    } else if (info && info.streams[idx] && info.streams[idx].bitmap) {
+      bmp = this.events.find((e) => e.idx === idx && e.start <= t && (e.end < 0 || e.end > t));
+      key = bmp ? 'b' + bmp.start : '';
+    }
+    const box = videoBox();
+    key += '|' + box.w + 'x' + box.h;
+    if (key === this.shownKey && !force) return;
+    this.shownKey = key;
+    cuesEl.innerHTML = html;
+    cuesEl.style.fontSize = Math.max(14, box.h * 0.045) + 'px';
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = stage.clientWidth * dpr; canvas.height = stage.clientHeight * dpr;
+    if (bmp) {
+      const cw = bmp.cw || video.videoWidth, ch = bmp.ch || video.videoHeight;
+      const sx = box.w / cw, sy = box.h / ch;
+      for (const r of bmp.rects) if (r.img) this.ctx.drawImage(r.img, (box.x + r.x * sx) * dpr, (box.y + r.y * sy) * dpr, r.w * sx * dpr, r.h * sy * dpr);
+    }
+  },
+};
+
+function videoBox() {
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+  const s = Math.min(W / vw, H / vh);
+  return { x: (W - vw * s) / 2, y: (H - vh * s) / 2, w: Math.round(vw * s), h: Math.round(vh * s) };
+}
+
+const decoder = new TextDecoder();
+function textToHtml(codec, bytes) {
+  let s;
+  if (codec === 'mov_text') s = decoder.decode(bytes.subarray(2, 2 + ((bytes[0] << 8) | bytes[1])));
+  else s = decoder.decode(bytes);
+  if (codec === 'ass' || codec === 'ssa') {
+    s = s.split(',').slice(8).join(',');
+    if (/\{[^}]*\\p[1-9]/.test(s)) return ''; // vector drawings
+    s = s.replace(/\\N/gi, '\n').replace(/\\h/g, ' ');
+  }
+  s = s.replace(/\{[^}]*\}/g, '').trim();
+  return esc(s).replace(/&lt;(\/?)(i|b|u)&gt;/gi, '<$1$2>').replace(/&lt;\/?(font|c|v|lang|ruby|rt)[^&]*&gt;/gi, '');
+}
+
+(function frame() { if (info) subs.render(); requestAnimationFrame(frame); })();
+
+/* ---------- controls ---------- */
+
+const bar = $('bar'), hover = $('hover');
+const duration = () => (isFinite(video.duration) && video.duration) || (info ? info.duration + info.shift : 0);
+
+function updateUi() {
+  const d = duration(), t = video.currentTime;
+  $('time').textContent = fmt(t) + ' / ' + fmt(d);
+  $('played').style.width = (d ? (t / d) * 100 : 0) + '%';
+  $('play').textContent = video.paused ? '▶' : '❚❚';
+  const b = video.buffered;
+  let h = '';
+  for (let i = 0; i < b.length && d; i++) h += `<i style="left:${(b.start(i) / d) * 100}%;width:${((b.end(i) - b.start(i)) / d) * 100}%"></i>`;
+  $('buffered').innerHTML = h;
+}
+for (const ev of ['timeupdate', 'play', 'pause', 'progress', 'durationchange']) video.addEventListener(ev, updateUi);
+
+const togglePlay = () => (video.paused ? video.play().catch(() => {}) : video.pause());
+const seekBy = (d) => { video.currentTime = Math.max(0, Math.min(duration() - 0.5, video.currentTime + d)); };
+$('play').onclick = togglePlay;
+video.onclick = togglePlay;
+video.ondblclick = () => $('fs').onclick();
+
+let dragging = false;
+const barTime = (e) => { const r = bar.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration(); };
+bar.onpointerdown = (e) => { dragging = true; bar.setPointerCapture(e.pointerId); bar.onpointermove(e); };
+bar.onpointermove = (e) => {
+  const t = barTime(e), r = bar.getBoundingClientRect();
+  hover.style.display = 'block'; hover.style.left = (e.clientX - r.left) + 'px'; hover.textContent = fmt(t);
+  if (dragging) $('played').style.width = (t / duration()) * 100 + '%';
+};
+bar.onpointerleave = () => { if (!dragging) hover.style.display = 'none'; };
+bar.onpointerup = (e) => { if (!dragging) return; dragging = false; hover.style.display = 'none'; video.currentTime = barTime(e); };
+
+$('vol').oninput = () => { video.volume = +$('vol').value; video.muted = false; localStorage.setItem('vol', $('vol').value); };
+if (localStorage.getItem('vol')) $('vol').value = video.volume = +localStorage.getItem('vol');
+
+$('fs').onclick = () => {
+  if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  else if (stage.requestFullscreen) stage.requestFullscreen();
+  else if (stage.webkitRequestFullscreen) stage.webkitRequestFullscreen();
+  else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+};
+
+function switchAudio(idx) {
+  if (!info || idx === sel.a || idx < 0) return;
+  sel.a = idx;
+  const p = audioPlan(info.streams[idx]);
+  sel.aMode = p.mode;
+  showChips();
+  if (!abuf) return;
+  if (p.mime !== sel.aMime && !abuf.sb.changeType) {
+    // No changeType() in this browser, so rebuild the MediaSource with the new codec
+    sel.aMime = p.mime;
+    const t = video.currentTime;
+    teardownMedia();
+    return attach(t);
+  }
+  start(video.currentTime);
+  setAudioMime(p.mime);
+}
+$('aud').onchange = () => switchAudio(+$('aud').value);
+$('sub').onchange = () => {
+  const prev = info.streams[sel.s];
+  sel.s = +$('sub').value;
+  const s = info.streams[sel.s];
+  // Bitmap subtitles are decoded only for the selected track, so the demuxer has to go back
+  if ((s && s.bitmap) || (prev && prev.bitmap)) start(video.currentTime);
+  subs.render(true);
+};
+
+let uiTimer;
+function showUi() { stage.classList.add('ui'); clearTimeout(uiTimer); uiTimer = setTimeout(() => { if (!video.paused && !dragging) stage.classList.remove('ui'); }, 2500); }
+stage.addEventListener('pointermove', showUi);
+stage.addEventListener('pointerdown', showUi);
+video.addEventListener('pause', showUi);
+video.addEventListener('play', showUi);
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'range' || e.target.tagName === 'SELECT' || !info) return;
+  const k = e.key.toLowerCase();
+  const cycle = (el) => { el.selectedIndex = (el.selectedIndex + 1) % el.options.length; el.onchange(); };
+  if (k === ' ' || k === 'k') togglePlay();
+  else if (k === 'arrowleft' || k === 'j') seekBy(k === 'j' ? -10 : -5);
+  else if (k === 'arrowright' || k === 'l') seekBy(k === 'l' ? 10 : 5);
+  else if (k === 'arrowup') { video.volume = Math.min(1, video.volume + 0.05); $('vol').value = video.volume; }
+  else if (k === 'arrowdown') { video.volume = Math.max(0, video.volume - 0.05); $('vol').value = video.volume; }
+  else if (k === 'm') video.muted = !video.muted;
+  else if (k === 'f') $('fs').onclick();
+  else if (k === 'c') cycle($('sub'));
+  else if (k === 'a') cycle($('aud'));
+  else return;
+  e.preventDefault();
+  showUi();
+});
+
+/* ---------- inputs ---------- */
+
+$('open').onclick = () => {
+  const u = $('url').value.trim();
+  if (!u) return;
+  history.replaceState(null, '', '#' + new URLSearchParams({ url: u }));
+  open({ url: new URL(u, location.href).href });
+};
+$('url').onkeydown = (e) => { if (e.key === 'Enter') $('open').onclick(); };
+$('pick').onclick = () => $('file').click();
+$('file').onchange = () => { const f = $('file').files[0]; if (f) open({ file: f }); };
+document.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('drag'); });
+document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('drag'); });
+document.addEventListener('drop', (e) => {
+  e.preventDefault(); document.body.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f) open({ file: f });
+  else { const u = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text'); if (u) { $('url').value = u.trim(); $('open').onclick(); } }
+});
+
+if (!MS) say('This browser has no Media Source Extensions, so it cannot run this player.');
+const startUrl = new URLSearchParams(location.hash.slice(1)).get('url');
+if (startUrl && MS) { $('url').value = startUrl; open({ url: new URL(startUrl, location.href).href }); }
+// A link that only changes #url= on an open page does not reload it, so open the new file here
+addEventListener('hashchange', () => {
+  const u = new URLSearchParams(location.hash.slice(1)).get('url');
+  if (u && MS && u !== $('url').value) { $('url').value = u; open({ url: new URL(u, location.href).href }); }
+});
+</script>
+</body>
+</html>
