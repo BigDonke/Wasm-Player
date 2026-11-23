@@ -1,0 +1,96 @@
+# Builds ff.js and ff.wasm with build/build.sh.
+# Pull requests only build and attach the result as an artifact.
+# Pushes to main also commit the result to main and deploy GitHub Pages.
+name: Build wasm
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-wasm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The FFmpeg libraries depend only on build.sh (versions and configure flags)
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/ffmpeg-out-*
+          key: ffmpeg-${{ hashFiles('build/build.sh') }}
+
+      - run: build/build.sh
+
+      - name: Report sizes
+        run: |
+          {
+            echo '| File | Bytes | Gzipped |'
+            echo '|---|---|---|'
+            for f in ff.js ff.wasm; do
+              echo "| $f | $(stat -c %s "$f") | $(gzip -9c "$f" | wc -c) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wasm
+          path: |
+            ff.js
+            ff.wasm
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wasm
+
+      # Pushes made with GITHUB_TOKEN do not start workflows, so this commit does not loop
+      - name: Commit the build to main
+        run: |
+          git add ff.js ff.wasm
+          if git diff --cached --quiet; then
+            echo "ff.js and ff.wasm are unchanged"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "Rebuild ff.js and ff.wasm for ${GITHUB_SHA::7}"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Collect the site files
+        run: |
+          mkdir _site
+          cp -r index.html worker.js ff.js ff.wasm samples LICENSE licenses _site/
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

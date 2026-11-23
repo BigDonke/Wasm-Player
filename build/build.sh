@@ -4,18 +4,22 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=$(pwd)
-EMSDK_VERSION=7.0.0
-FFMPEG_VERSION=9.0.2
+# Renovate bumps these two lines, see renovate.json
+# renovate: datasource=github-tags depName=emscripten-core/emsdk
+EMSDK_VERSION=7.0.1
+# renovate: datasource=github-tags depName=FFmpeg/FFmpeg
+FFMPEG_VERSION=9.1
 FFSRC="$ROOT/ffmpeg-$FFMPEG_VERSION"
-PREFIX="$ROOT/ffmpeg-out"
+PREFIX="$ROOT/ffmpeg-out-$FFMPEG_VERSION-emsdk-$EMSDK_VERSION"
 
 if [ ! -d "$ROOT/emsdk" ]; then
   git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$ROOT/emsdk"
+fi
+if [ ! -d "$ROOT/emsdk/upstream/emscripten" ] || ! grep -qx "$EMSDK_VERSION" "$ROOT/emsdk/.active-version" 2>/dev/null; then
+  git -C "$ROOT/emsdk" pull --ff-only
   "$ROOT/emsdk/emsdk" install "$EMSDK_VERSION"
   "$ROOT/emsdk/emsdk" activate "$EMSDK_VERSION"
-fi
-if [ ! -d "$FFSRC" ]; then
-  curl -fL "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" | tar -xJ -C "$ROOT"
+  echo "$EMSDK_VERSION" > "$ROOT/emsdk/.active-version"
 fi
 export EMSDK_QUIET=1
 source "$ROOT/emsdk/emsdk_env.sh"
@@ -26,7 +30,10 @@ DECODERS=aac,aac_latm,ac3,eac3,dca,truehd,mlp,flac,opus,vorbis,mp3,mp2,alac,pcm_
 CFLAGS="-O3 -sUSE_ZLIB=1"
 
 if [ ! -f "$PREFIX/lib/libavformat.a" ]; then
-  mkdir -p "$ROOT/ffmpeg-obj" && cd "$ROOT/ffmpeg-obj"
+  if [ ! -d "$FFSRC" ]; then
+    curl -fL "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" | tar -xJ -C "$ROOT"
+  fi
+  rm -rf "$ROOT/ffmpeg-obj" && mkdir -p "$ROOT/ffmpeg-obj" && cd "$ROOT/ffmpeg-obj"
   emconfigure "$FFSRC/configure" \
     --prefix="$PREFIX" --target-os=none --arch=x86_32 --enable-cross-compile \
     --cc=emcc --cxx=em++ --ar=emar --ranlib=emranlib --nm=emnm \

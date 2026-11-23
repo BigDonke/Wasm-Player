@@ -65,15 +65,19 @@ Switching the audio track restarts demuxing at the current position. Text subtit
 |---|---|
 | `index.html` | Player page, controls, MSE buffering and subtitle rendering |
 | `worker.js` | Range reads, read-ahead cache and the bridge to the wasm module |
-| `ff.js`, `ff.wasm` | Emscripten output of `build/src/ffcore.c` linked with FFmpeg 9.0.2 |
+| `ff.js`, `ff.wasm` | Emscripten output of `build/src/ffcore.c` linked with FFmpeg, built by GitHub Actions |
 | `samples/` | Two generated test files. One has 60 s of 1080p HEVC HDR10 with TrueHD, DTS, E-AC-3 and AAC tracks and SRT and ASS subtitles. The other has 3 min of 720p HEVC with DTS and AAC tracks and SRT and PGS subtitles. Each audio track is a sine at its own pitch. |
-| `build/build.sh` | Builds `ff.js` and `ff.wasm` |
+| `build/build.sh` | Builds `ff.js` and `ff.wasm`, and pins the Emscripten and FFmpeg versions |
 | `build/src/ffcore.c` | The C wrapper around FFmpeg that the worker calls |
 | `build/tools/` | `make_samples.sh` regenerates `samples/`, and `make_sup.py` writes its PGS track |
 
 ## Building the wasm module
 
-Run `build/build.sh` on macOS or Linux. It writes `ff.js` and `ff.wasm` to the repository root. The first run downloads Emscripten 7.0.0 into `build/emsdk` (1.9 GB) and the FFmpeg 9.0.2 source into `build/ffmpeg-9.0.2` (113 MB). It then configures and compiles FFmpeg, which takes about two minutes. Later runs only recompile `ffcore.c`. The FFmpeg component lists sit at the top of `build.sh`.
+GitHub Actions builds `ff.js` and `ff.wasm` with `build/build.sh` (`.github/workflows/build-wasm.yml`). On a pull request it uploads them as a build artifact. On a push to main it commits them to main and deploys GitHub Pages.
+
+The Emscripten and FFmpeg versions are pinned at the top of `build.sh`. Renovate opens a pull request when a new version has been out for 7 days (`renovate.json`).
+
+To build locally, run `build/build.sh` on macOS or Linux. It writes `ff.js` and `ff.wasm` to the repository root. The first run downloads Emscripten into `build/emsdk` (1.9 GB) and the FFmpeg source into `build/` (113 MB). It then configures and compiles FFmpeg, which takes about two minutes. Later runs only recompile `ffcore.c`, until a version or the FFmpeg configuration in `build.sh` changes. The FFmpeg component lists sit at the top of `build.sh`.
 
 `build/tools/make_samples.sh` regenerates `samples/`. It needs `ffmpeg` with libx265, and Python for the PGS track.
 
@@ -85,4 +89,4 @@ Chromium and Firefox played every sample. Both also played and seeked through 4K
 
 The player code (`index.html`, `worker.js`, `build/`) is MIT, see `LICENSE`.
 
-`ff.wasm` and `ff.js` contain FFmpeg 9.0.2, which is licensed under the LGPL 2.1 or later, see `licenses/FFmpeg-LGPL-2.1.txt`. The build enables no GPL or nonfree parts. FFmpeg source is at https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz, and `build/build.sh` holds the exact configuration. To use a modified FFmpeg, point `build.sh` at it and rebuild. `ff.js` also contains the Emscripten runtime (MIT) and zlib (zlib license).
+`ff.wasm` and `ff.js` contain FFmpeg, which is licensed under the LGPL 2.1 or later, see `licenses/FFmpeg-LGPL-2.1.txt`. The build enables no GPL or nonfree parts. `build/build.sh` holds the exact FFmpeg version and configuration, and the source release is at https://ffmpeg.org/releases/. To use a modified FFmpeg, point `build.sh` at it and rebuild. `ff.js` also contains the Emscripten runtime (MIT) and zlib (zlib license).
