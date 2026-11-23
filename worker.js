@@ -30,7 +30,9 @@ function fetchBytes(start, end) {
     return new Uint8Array(x.response);
   }
   if (x.status === 200) {
-    // The server ignored Range and sent everything. Keep it as one big range.
+    // The server ignored Range and sent everything. Keep it as one big range. probeRanges
+    // normally catches this first. A null response means the browser could not allocate it.
+    if (!x.response) throw new Error(TOO_BIG);
     const all = new Uint8Array(x.response);
     size = all.length;
     ranges = [{ start: 0, data: all }];
@@ -162,6 +164,53 @@ function probeSize() {
   } catch (e) { /* size stays unknown, seeking may be limited */ }
 }
 
+// A server that ignores Range sends the whole file. Find that out with one async request
+// and stream the body into memory with a cap and progress, so a synchronous request never
+// pulls an unbounded body. Network and CORS failures are left to the synchronous path,
+// which explains them.
+const WHOLE_MAX = 256 << 20;
+const TOO_BIG = "The server doesn't support range requests, so the player would have to hold the whole file "
+  + 'in memory, and this file is over 256 MB. You can download the file and open it here instead.';
+
+async function probeRanges() {
+  if (src.file || typeof fetch !== 'function') return;
+  const ctrl = new AbortController();
+  let res;
+  try {
+    res = await fetch(src.url, { headers: { Range: `bytes=0-${minChunk() - 1}` }, signal: ctrl.signal });
+  } catch (e) { return; }
+  if (res.status === 206) {
+    const cr = res.headers.get('Content-Range');
+    const m = cr && /\/(\d+)/.exec(cr);
+    if (m) size = +m[1];
+    rangesWork = true;
+    try { addRange({ start: 0, data: new Uint8Array(await res.arrayBuffer()) }, true); } catch (e) { /* read again later */ }
+    return;
+  }
+  if (res.status !== 200 || !res.body) { ctrl.abort(); return; }
+  // Content-Length is the compressed size when the body is compressed, so it only sizes the buffer
+  const total = +res.headers.get('Content-Length') || 0;
+  if (total > WHOLE_MAX) { ctrl.abort(); throw new Error(TOO_BIG); }
+  let buf = new Uint8Array(total || 16 << 20), n = 0, shown = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (n + value.length > WHOLE_MAX) { ctrl.abort(); throw new Error(TOO_BIG); }
+    if (n + value.length > buf.length) {
+      const grown = new Uint8Array(Math.min(WHOLE_MAX, Math.max(buf.length * 2, n + value.length)));
+      grown.set(buf.subarray(0, n));
+      buf = grown;
+    }
+    buf.set(value, n);
+    n += value.length;
+    if (Date.now() - shown > 250) { shown = Date.now(); postMessage({ type: 'whole', loaded: n, total }); }
+  }
+  const all = n === buf.length ? buf : buf.slice(0, n);
+  ranges = [{ start: 0, data: all }];
+  cached = size = n;
+}
+
 /* ---------- output collection ---------- */
 
 function concat(list) {
@@ -217,6 +266,7 @@ onmessage = async ({ data: msg }) => {
     if (msg.type === 'open') {
       await init();
       src = msg.src;
+      await probeRanges();
       probeSize();
       const json = M.UTF8ToString(M._fp_open());
       if (!json) throw new Error('Could not read this file. Unsupported container or the server refused the request.');

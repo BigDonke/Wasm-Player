@@ -326,6 +326,11 @@ function makeWorker() {
 
 const handlers = {
   info(m) { info = m.info; setupStreams(); },
+  whole(m) {
+    const mb = (b) => Math.round(b / 1048576);
+    say(`The server doesn't support range requests, so the whole file loads first. ${mb(m.loaded)}`
+      + (m.total ? ` of ${mb(m.total)} MB` : ' MB'), true);
+  },
   started(m) {
     if (m.gen !== gen || !abuf) return;
     if (m.aMode !== sel.aMode) {
