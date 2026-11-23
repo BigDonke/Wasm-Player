@@ -15,7 +15,7 @@ Nothing is uploaded. Local files are read in the browser, and links are fetched 
 
 Paste a link and press Play, pick a local file, or drop a file or link onto the page. Brave and Safari block autoplay with sound, so the player then shows a large play button. A link can also go in the address, as `#url=https://example.com/movie.mkv`.
 
-A remote file needs two things from its server. It must answer HTTP Range requests, and it must send CORS headers (`Access-Control-Allow-Origin`). Most file hosts and CDNs do both. If the server ignores Range, the player downloads the whole file into memory before playing.
+A remote file needs two things from its server. It must answer HTTP Range requests, and it must send CORS headers (`Access-Control-Allow-Origin`). Most file hosts and CDNs do both. If the server ignores Range, the player downloads the whole file into memory before playing and shows the progress. It refuses files over 256 MB from such servers, since a tab on a phone or a low-memory device can run out of memory holding them.
 
 To run it locally, serve the folder with any static server, for example `python -m http.server`. Browsers do not start a worker from `file://`, so opening `index.html` directly does not work.
 
